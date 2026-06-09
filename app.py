@@ -194,7 +194,11 @@ def sheets_kaydet(df: pd.DataFrame, sayfa_adi: str) -> tuple[bool, str]:
         except Exception:
             pass
         ws = dosya.add_worksheet(title=sayfa_adi, rows=len(df) + 5, cols=len(df.columns) + 2)
-        ws.update([df.columns.tolist()] + df.astype(str).values.tolist())
+        # NaN/inf değerleri Google'ın kabul etmesi için boş hücreye çevir
+        temiz = df.replace([np.inf, -np.inf], np.nan)
+        temiz = temiz.astype(object).where(pd.notna(temiz), "")
+        veriler = [temiz.columns.tolist()] + temiz.astype(str).replace("nan", "").values.tolist()
+        ws.update(values=veriler)
         return True, f"✅ Sonuçlar Google Sheets'e yazıldı (sayfa: {sayfa_adi})."
     except Exception as e:
         return False, f"Google Sheets bağlantısı kurulamadı: {e}"
