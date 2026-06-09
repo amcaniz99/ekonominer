@@ -56,40 +56,53 @@ def yerel_veri_yukle() -> pd.DataFrame:
     return pd.read_csv(yol)
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
-def worldbank_canli_cek(iso_listesi: tuple, yil: str = "2023") -> pd.DataFrame | None:
+@st.cache_data(ttl=3600, show_spinner=False)
+def worldbank_canli_cek(iso_listesi: tuple, yil: str = "2023") -> pd.DataFrame:
     """Dünya Bankası API'den seçili ülkeler için tüm göstergeleri çeker.
-    Başarısız olursa None döner; uygulama yerel yedeğe geçer."""
-    try:
-        ulkeler = ";".join(iso_listesi)
-        kayitlar = {}
-        for kolon, (_, kod) in GOSTERGELER.items():
-            url = (
-                f"https://api.worldbank.org/v2/country/{ulkeler}/indicator/{kod}"
-                f"?format=json&date={yil}&per_page=400"
-            )
-            r = requests.get(url, timeout=15)
-            r.raise_for_status()
-            veri = r.json()[1]
-            for satir in veri:
-                iso = satir["countryiso3code"]
-                kayitlar.setdefault(iso, {})[kolon] = satir["value"]
-        df = pd.DataFrame.from_dict(kayitlar, orient="index").reset_index(names="iso3")
-        # Türkçe ülke adlarını yerel sözlükten eşle
-        adlar = yerel_veri_yukle().set_index("iso3")["ulke"].to_dict()
-        df["ulke"] = df["iso3"].map(adlar).fillna(df["iso3"])
-        return df.dropna(thresh=6)
-    except Exception:
-        return None
+    Hata durumunda exception fırlatır (böylece başarısız sonuç önbelleğe alınmaz)."""
+    ulkeler = ";".join(iso_listesi)
+    kayitlar = {}
+    basarili_gosterge = 0
+    for kolon, (_, kod) in GOSTERGELER.items():
+        url = (
+            f"https://api.worldbank.org/v2/country/{ulkeler}/indicator/{kod}"
+            f"?format=json&date={yil}&per_page=400"
+        )
+        # Her gösterge için 2 deneme; tek göstergenin hatası tüm çekimi bozmasın
+        for deneme in range(2):
+            try:
+                r = requests.get(url, timeout=30)
+                r.raise_for_status()
+                yanit = r.json()
+                if len(yanit) < 2 or yanit[1] is None:
+                    break
+                for satir in yanit[1]:
+                    iso = satir["countryiso3code"]
+                    kayitlar.setdefault(iso, {})[kolon] = satir["value"]
+                basarili_gosterge += 1
+                break
+            except Exception:
+                continue
+    if basarili_gosterge < 5 or len(kayitlar) < 20:
+        raise RuntimeError("World Bank API'den yeterli veri alınamadı")
+    df = pd.DataFrame.from_dict(kayitlar, orient="index").reset_index(names="iso3")
+    # Türkçe ülke adlarını yerel sözlükten eşle
+    adlar = yerel_veri_yukle().set_index("iso3")["ulke"].to_dict()
+    df["ulke"] = df["iso3"].map(adlar).fillna(df["iso3"])
+    return df.dropna(thresh=6)
 
 
 def veri_getir(kaynak: str) -> tuple[pd.DataFrame, str]:
     yerel = yerel_veri_yukle()
     if kaynak == "Dünya Bankası API (canlı)":
-        canli = worldbank_canli_cek(tuple(yerel["iso3"]))
-        if canli is not None and len(canli) >= 20:
-            return canli, "🌐 Canlı veri: Dünya Bankası Open Data API (2023)"
-        st.sidebar.warning("API'ye ulaşılamadı, yerel yedek veri kullanılıyor.")
+        try:
+            with st.spinner("Dünya Bankası API'den veri çekiliyor..."):
+                canli = worldbank_canli_cek(tuple(yerel["iso3"]))
+            if len(canli) >= 20:
+                return canli, "🌐 Canlı veri: Dünya Bankası Open Data API (2023)"
+        except Exception:
+            pass
+        st.sidebar.warning("API'ye ulaşılamadı, yerel yedek veri kullanılıyor. (Tekrar denemek için kaynağı değiştirip geri alın)")
     return yerel, "💾 Yerel veri: Dünya Bankası 2023 anlık görüntüsü (yedek)"
 
 
@@ -103,25 +116,38 @@ def gemini_anahtari() -> str | None:
         return os.environ.get("GEMINI_API_KEY")
 
 
-def gemini_sor(istem: str) -> str | None:
-    """Gemini REST API ile metin üretir. Anahtar yoksa/hata olursa None döner."""
+def gemini_sor(istem: str) -> tuple[str | None, str]:
+    """Gemini REST API ile metin üretir. (yanıt, hata_detayı) döner."""
     anahtar = gemini_anahtari()
     if not anahtar:
-        return None
-    for model in ("gemini-2.0-flash", "gemini-1.5-flash"):
+        return None, "API anahtarı tanımlı değil (Secrets içine GEMINI_API_KEY ekleyin)."
+    hatalar = []
+    modeller = (
+        "gemini-flash-latest",
+        "gemini-2.5-flash",
+        "gemini-2.0-flash",
+        "gemini-1.5-flash",
+    )
+    for model in modeller:
         try:
             url = (
                 "https://generativelanguage.googleapis.com/v1beta/models/"
                 f"{model}:generateContent?key={anahtar}"
             )
             govde = {"contents": [{"parts": [{"text": istem}]}]}
-            r = requests.post(url, json=govde, timeout=45)
+            r = requests.post(url, json=govde, timeout=60)
             if r.status_code != 200:
+                try:
+                    mesaj = r.json().get("error", {}).get("message", "")[:120]
+                except Exception:
+                    mesaj = r.text[:120]
+                hatalar.append(f"{model} → HTTP {r.status_code}: {mesaj}")
                 continue
-            return r.json()["candidates"][0]["content"]["parts"][0]["text"]
-        except Exception:
+            return r.json()["candidates"][0]["content"]["parts"][0]["text"], ""
+        except Exception as e:
+            hatalar.append(f"{model} → {type(e).__name__}: {str(e)[:100]}")
             continue
-    return None
+    return None, " | ".join(hatalar)
 
 
 def yerlesik_yorum(df: pd.DataFrame, kume_ozet: pd.DataFrame) -> str:
@@ -340,12 +366,14 @@ Görev: Türkçe, akademik ama anlaşılır bir dille:
 4) Politika çıkarımlarıyla bitir. Madde işaretleri kullan, ~350 kelime.
 {f'Kullanıcının ek sorusu: {soru}' if soru else ''}"""
         with st.spinner("Gemini analiz ediyor..."):
-            yanit = gemini_sor(istem)
+            yanit, hata = gemini_sor(istem)
         if yanit:
             st.markdown(yanit)
             st.session_state["son_ai_rapor"] = yanit
         else:
             st.info("Gemini API'ye ulaşılamadı; yerleşik analiz motoru kullanıldı.")
+            if hata:
+                st.caption(f"Teknik detay: {hata}")
             st.markdown(yerlesik_yorum(df, kume_ozet))
 
 # --- 6) Google Sheets --------------------------------------------------------
