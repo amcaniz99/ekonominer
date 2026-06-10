@@ -363,12 +363,14 @@ Küme üyelikleri:
 
 Aykırı (anomali) tespit edilen ülkeler: {df[df['Anomali']==-1]['ulke'].tolist()}
 
-Görev: Türkçe, akademik ama anlaşılır bir dille:
+{f'''Görev: Kullanıcı sana şu soruyu sordu: "{soru}"
+Önce BU SORUYA doğrudan, net ve spesifik bir cevap ver (sorunun öznesi neyse ona odaklan,
+genel rapor yazma). Cevabını verilerle destekle. En sonda 2-3 cümlelik kısa bir genel
+değerlendirme ekleyebilirsin. Türkçe yaz, ~250 kelime.''' if soru else f'''Görev: Türkçe, akademik ama anlaşılır bir dille:
 1) Her kümeyi ekonomik olarak isimlendir ve karakterize et,
 2) Türkiye'nin konumunu özel olarak değerlendir,
 3) Aykırı ülkelerin neden saptığını açıkla,
-4) Politika çıkarımlarıyla bitir. Madde işaretleri kullan, ~350 kelime.
-{f'Kullanıcının ek sorusu: {soru}' if soru else ''}"""
+4) Politika çıkarımlarıyla bitir. Madde işaretleri kullan, ~350 kelime.'''}"""
         with st.spinner("Gemini analiz ediyor..."):
             yanit, hata = gemini_sor(istem)
         if yanit:
